@@ -1,23 +1,21 @@
 #!/usr/bin/env node
 
 /**
- * IRS Taxpayer MCP Server
+ * IRS Taxpayer MCP Server — Streamable HTTP Transport
  *
  * A Model Context Protocol server for individual US taxpayers.
- * Hybrid architecture:
- *   - All tax calculations run locally (no PII leaves the machine)
- *   - Only public IRS data is fetched remotely when needed
+ * All tax calculations run locally (no PII leaves the machine).
  *
- * Supports both stdio and SSE transports:
- *   stdio (default): npx irs-taxpayer-mcp
- *   SSE:             npx irs-taxpayer-mcp --sse [--port 3000]
+ * Transports:
+ *   Streamable HTTP (default): POST /mcp — stateless, Railway-ready
+ *   stdio:                     npx irs-taxpayer-mcp --stdio
  *
  * @see https://modelcontextprotocol.io
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { registerTaxCalculationTools } from "./tools/tax-calculation-tools.js";
 import { registerDeductionTools } from "./tools/deduction-tools.js";
 import { registerIrsLookupTools } from "./tools/irs-lookup-tools.js";
@@ -30,59 +28,42 @@ import { registerAdvancedTools } from "./tools/advanced-tools.js";
 import { registerSmartTools } from "./tools/smart-tools.js";
 import http from "node:http";
 
-const server = new McpServer({
-  name: "irs-taxpayer-mcp",
-  version: "0.5.3",
-  description:
-    "Tax calculation, credits, deductions, state taxes, and retirement strategy tools for individual US taxpayers. " +
-    "All financial calculations run locally — your income data never leaves your machine.",
-});
+const TOOL_COUNT = 39;
 
-// Register all tool groups
-registerTaxCalculationTools(server);   // 6 tools: calculate, brackets, compare, quarterly, total, w4
-registerDeductionTools(server);        // 2 tools: list deductions, standard vs itemized
-registerIrsLookupTools(server);        // 3 tools: deadlines, refund status, form info
-registerCreditTools(server);           // 5 tools: list credits, eligibility, retirement accounts, strategies, EITC
-registerStateTaxTools(server);         // 4 tools: state info, estimate, compare states, no-tax states
-registerPlanningTools(server);         // 6 tools: planning tips, year compare, SE tax, mortgage, education, MFJ vs MFS
-registerObbbTools(server);             // 2 tools: OBBB deductions calculator, what changed between years
-registerComprehensiveTools(server);    // 6 tools: report, 1099, calendar, paycheck, scenario, audit
-registerAdvancedTools(server);         // 5 tools: docs, capgains, retirement, multi-year, relocation
-registerSmartTools(server);            // 3 tools: health check, knowledge base, form guide
+function createServer(): McpServer {
+  const server = new McpServer({
+    name: "irs-taxpayer-mcp",
+    version: "0.5.3",
+    description:
+      "Tax calculation, credits, deductions, state taxes, and retirement strategy tools for individual US taxpayers. " +
+      "All financial calculations run locally — your income data never leaves your machine.",
+  });
 
-const args = process.argv.slice(2);
+  // Register all tool groups
+  registerTaxCalculationTools(server);   // 6 tools
+  registerDeductionTools(server);        // 2 tools
+  registerIrsLookupTools(server);        // 3 tools
+  registerCreditTools(server);           // 5 tools
+  registerStateTaxTools(server);         // 4 tools
+  registerPlanningTools(server);         // 6 tools
+  registerObbbTools(server);             // 2 tools
+  registerComprehensiveTools(server);    // 6 tools
+  registerAdvancedTools(server);         // 5 tools
+  registerSmartTools(server);            // 3+ tools
 
-if (args.includes("--help") || args.includes("-h")) {
-  printHelp();
-  process.exit(0);
+  return server;
 }
 
-const useSSE = args.includes("--sse");
-const portIndex = args.indexOf("--port");
-const port = portIndex !== -1 ? parseInt(args[portIndex + 1], 10) : 3000;
-
-async function main(): Promise<void> {
-  if (useSSE) {
-    await startSSE(port);
-  } else {
-    await startStdio();
-  }
-}
-
-async function startStdio(): Promise<void> {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("IRS Taxpayer MCP server running on stdio — 39 tools loaded");
-}
-
-async function startSSE(ssePort: number): Promise<void> {
-  let sseTransport: SSEServerTransport | null = null;
-
+// ---------------------------------------------------------------------------
+// Transport: Streamable HTTP (stateless, one server per request)
+// ---------------------------------------------------------------------------
+async function startStreamableHTTP(port: number): Promise<void> {
   const httpServer = http.createServer(async (req, res) => {
-    // CORS headers
+    // CORS
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, Mcp-Session-Id");
+    res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 
     if (req.method === "OPTIONS") {
       res.writeHead(204);
@@ -90,36 +71,98 @@ async function startSSE(ssePort: number): Promise<void> {
       return;
     }
 
-    if (req.url === "/sse" && req.method === "GET") {
-      sseTransport = new SSEServerTransport("/messages", res);
-      await server.connect(sseTransport);
-      return;
-    }
-
-    if (req.url === "/messages" && req.method === "POST") {
-      if (sseTransport) {
-        await sseTransport.handlePostMessage(req, res);
-      } else {
-        res.writeHead(400);
-        res.end("No SSE connection established. Connect to /sse first.");
-      }
-      return;
-    }
-
     // Health check
-    if (req.url === "/health") {
+    if (req.url === "/health" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", tools: 39, transport: "sse" }));
+      res.end(JSON.stringify({
+        status: "ok",
+        tools: TOOL_COUNT,
+        transport: "streamable-http",
+        endpoint: "/mcp",
+      }));
       return;
     }
 
-    res.writeHead(404);
-    res.end("Not found. Use GET /sse for SSE connection, POST /messages for messages, GET /health for status.");
+    // Root redirect hint
+    if (req.url === "/" && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        name: "irs-taxpayer-mcp",
+        version: "0.5.3",
+        transport: "streamable-http",
+        endpoint: "/mcp",
+        health: "/health",
+        tools: TOOL_COUNT,
+        docs: "POST JSON-RPC to /mcp. See https://modelcontextprotocol.io",
+      }));
+      return;
+    }
+
+    // --- MCP endpoint: /mcp ---
+    if (req.url === "/mcp") {
+      // Stateless mode: create a fresh server + transport per request
+      const mcpServer = createServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // stateless — no session tracking
+      });
+
+      // Wire MCP server to transport, then let transport handle the HTTP req/res
+      await mcpServer.connect(transport);
+      await transport.handleRequest(req, res);
+
+      // After the response is sent, clean up
+      res.on("close", () => {
+        transport.close().catch(() => {});
+        mcpServer.close().catch(() => {});
+      });
+      return;
+    }
+
+    // 404 fallback
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      error: "Not found",
+      hint: "POST JSON-RPC requests to /mcp, or GET /health for status.",
+    }));
   });
 
-  httpServer.listen(ssePort, () => {
-    console.error(`IRS Taxpayer MCP server running on SSE — http://localhost:${ssePort}/sse — 39 tools loaded`);
+  httpServer.listen(port, "0.0.0.0", () => {
+    console.error(
+      `IRS Taxpayer MCP server running — Streamable HTTP on http://0.0.0.0:${port}/mcp — ${TOOL_COUNT} tools loaded`
+    );
   });
+}
+
+// ---------------------------------------------------------------------------
+// Transport: stdio (for local CLI use)
+// ---------------------------------------------------------------------------
+async function startStdio(): Promise<void> {
+  const mcpServer = createServer();
+  const transport = new StdioServerTransport();
+  await mcpServer.connect(transport);
+  console.error(`IRS Taxpayer MCP server running on stdio — ${TOOL_COUNT} tools loaded`);
+}
+
+// ---------------------------------------------------------------------------
+// CLI entry point
+// ---------------------------------------------------------------------------
+const args = process.argv.slice(2);
+
+if (args.includes("--help") || args.includes("-h")) {
+  printHelp();
+  process.exit(0);
+}
+
+const useStdio = args.includes("--stdio");
+const portIndex = args.indexOf("--port");
+const port = portIndex !== -1 ? parseInt(args[portIndex + 1], 10) : parseInt(process.env.PORT || "3000", 10);
+
+async function main(): Promise<void> {
+  if (useStdio) {
+    await startStdio();
+  } else {
+    await startStreamableHTTP(port);
+  }
 }
 
 main().catch((err) => {
@@ -132,12 +175,17 @@ function printHelp(): void {
 irs-taxpayer-mcp v0.5.3 — Tax assistant MCP server for US individual taxpayers
 
 USAGE:
-  npx irs-taxpayer-mcp              Start in stdio mode (default)
-  npx irs-taxpayer-mcp --sse        Start in SSE mode (port 3000)
-  npx irs-taxpayer-mcp --sse --port 8080
-  npx irs-taxpayer-mcp --help       Show this help
+  npx irs-taxpayer-mcp                  Start Streamable HTTP on port 3000 (default)
+  npx irs-taxpayer-mcp --port 8080      Start on custom port
+  npx irs-taxpayer-mcp --stdio          Start in stdio mode (local CLI)
+  npx irs-taxpayer-mcp --help           Show this help
 
-TOOLS (39):
+ENDPOINTS:
+  POST /mcp          Streamable HTTP MCP endpoint (JSON-RPC)
+  GET  /health       Health check
+  GET  /             Server info
+
+TOOLS (${TOOL_COUNT}):
 
   Federal Tax Calculations
     calculate_federal_tax        Full federal tax with AMT, NIIT, QBI, SE tax, CTC

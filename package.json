@@ -1,8 +1,7 @@
 {
   "name": "irs-taxpayer-mcp",
   "version": "0.5.3",
-  "mcpName": "io.github.dma9527/irs-taxpayer",
-  "description": "MCP server for individual US taxpayers - tax calculations, deduction analysis, IRS data lookup",
+  "description": "MCP server for individual US taxpayers - Streamable HTTP on /mcp - tax calculations, deduction analysis, IRS data lookup",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -15,13 +14,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dma9527/irs-taxpayer-mcp.git"
+    "url": "git+https://github.com/MikeVenge/irs-tax-code.git"
   },
-  "homepage": "https://github.com/dma9527/irs-taxpayer-mcp",
-  "author": "Ding Ma",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:stdio": "node dist/index.js --stdio",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -33,11 +31,8 @@
     "tax",
     "taxpayer",
     "model-context-protocol",
-    "federal-tax",
-    "state-tax",
-    "tax-calculator",
-    "tax-credits",
-    "retirement"
+    "streamable-http",
+    "railway"
   ],
   "license": "MIT",
   "dependencies": {

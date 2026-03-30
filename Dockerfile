@@ -1,3 +1,4 @@
+# ---------- Build stage ----------
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
@@ -6,9 +7,16 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
+# ---------- Production stage ----------
 FROM node:20-alpine
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
-ENTRYPOINT ["node", "dist/index.js"]
+
+# Railway injects $PORT at runtime (default 3000)
+ENV PORT=3000
+EXPOSE 3000
+
+# Streamable HTTP is the default transport
+CMD ["node", "dist/index.js"]
